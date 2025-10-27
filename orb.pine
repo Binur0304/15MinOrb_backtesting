@@ -1,0 +1,87 @@
+//@version=6
+strategy("15-Min NY ORB Strategy (v6)", 
+     overlay=true, 
+     shorttitle="NY ORB v6",
+     default_qty_type=strategy.percent_of_equity, 
+     default_qty_value=10, // Risk 10% of equity per trade
+     commission_value=0.01, // Example commission
+     commission_type=strategy.commission.percent)
+
+// --- Inputs ---
+string nyTimezone = "America/New_York"
+string nySession = "0930-0945"
+int tpTicks = input.int(400, "Take Profit (Ticks)", minval=1)
+int slTicks = input.int(200, "Stop Loss (Ticks)", minval=1)
+int volLookback = input.int(20, "Volume SMA Lookback", minval=1)
+
+// --- Variables ---
+// 'var' variables persist their values across bars.
+var float orbHigh = na
+var float orbLow = na
+var bool rangeComplete = false // Flag to indicate if the opening range is set
+
+// --- Time & Session Logic ---
+// Check if the current bar is inside the "0930-0945" NY session
+bool isInOpeningRange = not na(time(timeframe.period, nySession, nyTimezone))
+
+// Detect a new day to reset our variables
+// FIX: ta.change() returns an 'int'. We must explicitly check if it's non-zero to get a 'bool'.
+bool isNewDay = ta.change(dayofmonth) != 0
+
+if isNewDay
+    orbHigh := na
+    orbLow := na
+    rangeComplete := false
+
+// --- Capture Opening Range ---
+if isInOpeningRange
+    if na(orbHigh)
+        // This is the first bar of the range
+        orbHigh := high
+        orbLow := low
+    else
+        // These are subsequent bars *within* the range
+        orbHigh := math.max(high, orbHigh)
+        orbLow := math.min(low, orbLow)
+
+// --- Lock in Range & Enable Trading ---
+// Detect the *first bar* right after the opening range ends.
+if isInOpeningRange[1] and not isInOpeningRange and not rangeComplete
+    // Lock in the high/low values from the completed range.
+    orbHigh := orbHigh[1]
+    orbLow := orbLow[1]
+    rangeComplete := true // Flag that the range is set and trading is enabled
+
+// --- Plotting ---
+// Plot the high and low lines *after* the range is complete.
+plot(rangeComplete ? orbHigh : na, "ORB High", color.new(color.green, 0), 2, plot.style_stepline)
+plot(rangeComplete ? orbLow : na, "ORB Low", color.new(color.red, 0), 2, plot.style_stepline)
+
+// Shade the background during the opening range calculation.
+bgcolor(isInOpeningRange ? color.new(color.blue, 90) : na, title="Opening Range Window")
+
+
+// 1. Volume Filter
+float volSma = ta.sma(volume, volLookback)
+bool volumeFilter = volume > volSma
+
+
+bool canTrade = rangeComplete and strategy.position_size == 0
+bool longCondition = ta.crossover(close, orbHigh) and volumeFilter
+bool shortCondition = ta.crossunder(close, orbLow) and volumeFilter
+
+// 3. Entry
+if longCondition and canTrade
+    strategy.entry("Long", strategy.long)
+
+if shortCondition and canTrade
+    strategy.entry("Short", strategy.short)
+
+// 4. Exit (Stop Loss & Take Profit)
+// apply the SL/TP exits only if a position is open.
+if strategy.position_size > 0
+    strategy.exit("Long Exit", from_entry="Long", loss=slTicks, profit=tpTicks)
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", from_entry="Short", loss=slTicks, profit=tpTicks)
+
